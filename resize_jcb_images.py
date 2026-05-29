@@ -106,15 +106,25 @@ def remove_ai_background(img: Image.Image, model_name: str = "u2netp"):
     os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba-cache")
     os.environ.setdefault("U2NET_HOME", "/tmp/u2net-cache")
     try:
+        import onnxruntime as ort
         from rembg import new_session, remove
     except ImportError as error:
         raise RuntimeError(
-            "AI background removal needs the rembg package. Install requirements.txt and restart the app."
+            "AI background removal needs rembg plus the onnxruntime CPU backend. "
+            "Make sure requirements.txt includes rembg[cpu] and onnxruntime, then reboot the app."
         ) from error
 
     global _rembg_session
     if _rembg_session is None:
-        _rembg_session = new_session(model_name)
+        try:
+            _rembg_session = new_session(model_name, providers=["CPUExecutionProvider"])
+        except Exception as error:
+            providers = getattr(ort, "get_available_providers", lambda: [])()
+            raise RuntimeError(
+                "AI background removal could not start the ONNX CPU backend. "
+                f"Detected ONNX providers: {providers}. "
+                "On Streamlit Cloud, reboot the app after dependencies install."
+            ) from error
 
     return remove(img.convert("RGBA"), session=_rembg_session)
 
