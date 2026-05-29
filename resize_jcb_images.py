@@ -137,13 +137,7 @@ def build_output(
     target_h: int,
     *,
     background_color: tuple[int, int, int] = (255, 255, 255),
-    remove_background: bool = False,
-    background_model: str = "u2netp",
 ):
-    trimmed = trimmed.convert("RGB")
-    if remove_background:
-        trimmed = remove_ai_background(trimmed, model_name=background_model)
-
     fitted = resize_fit(trimmed, target_w, target_h)
     fw, fh = fitted.size
     x = (target_w - fw) // 2
@@ -159,7 +153,6 @@ def build_output(
     return (
         out,
         background_color,
-        "ai" if remove_background else None,
     )
 
 def process_zip(
@@ -221,6 +214,13 @@ def process_zip(
                 top2, bottom2 = 0, img.height
                 trimmed = img
 
+            background_removal_method = None
+            if remove_background:
+                if progress_callback:
+                    progress_callback(index, len(image_files), f"AI removing background: {img_path.name}")
+                trimmed = remove_ai_background(trimmed, model_name=background_model)
+                background_removal_method = "ai"
+
             info_parts = [
                 f"{img_path.name}",
                 f"original={img.size}",
@@ -230,13 +230,11 @@ def process_zip(
             ]
 
             for tw, th in size_targets:
-                out, bg_rgb, background_removal_method = build_output(
+                out, bg_rgb = build_output(
                     trimmed,
                     tw,
                     th,
                     background_color=background_color,
-                    remove_background=remove_background,
-                    background_model=background_model,
                 )
                 output_filename = f"{title}_{tw}x{th}.{extension}"
                 save_kwargs = {"optimize": True}

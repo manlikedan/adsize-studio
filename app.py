@@ -4,7 +4,7 @@ import zipfile
 
 import streamlit as st
 
-from resize_jcb_images import process_zip, targets
+from resize_jcb_images import process_zip, targets, valid_exts
 
 
 APP_NAME = "AdSize Studio"
@@ -79,7 +79,11 @@ if uploaded_zip is not None:
             image_count = sum(
                 1
                 for item in source.infolist()
-                if not item.is_dir() and Path(item.filename).suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
+                if (
+                    not item.is_dir()
+                    and Path(item.filename).suffix.lower() in valid_exts
+                    and not Path(item.filename).name.startswith("._")
+                )
             )
         st.success(f"Found {image_count} image file{'s' if image_count != 1 else ''} in the zip.")
     except zipfile.BadZipFile:
