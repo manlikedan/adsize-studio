@@ -52,7 +52,7 @@ with st.sidebar:
         help="One size per line, written as WIDTHxHEIGHT.",
         height=150,
     )
-    background_mode = st.selectbox("Background", ["Gradient fill", "White"], index=0)
+    background_color = st.color_picker("Background color", value="#FFFFFF")
     remove_background = st.toggle("AI remove background", value=False)
     background_model = "u2netp"
     output_format = st.selectbox("Format", ["PNG", "JPEG", "WEBP"], index=0)
@@ -102,7 +102,7 @@ if st.button("Build ad assets", type="primary", disabled=not can_process):
                 tmp_dir,
                 selected_sizes,
                 do_trim=do_trim,
-                background_mode="white" if background_mode == "White" else "gradient",
+                background_color=background_color,
                 remove_background=remove_background,
                 background_model=background_model,
                 output_format=output_format,

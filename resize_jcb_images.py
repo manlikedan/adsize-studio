@@ -71,36 +71,6 @@ def resize_fit(img: Image.Image, target_w: int, target_h: int):
     new_h = max(1, round(img.height * scale))
     return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-def robust_band_colour(band: np.ndarray):
-    pts = band.reshape(-1, 3).astype(np.float32)
-
-    brightness = pts.mean(axis=1)
-    cutoff = np.percentile(brightness, 25)
-    pts = pts[brightness >= cutoff]
-
-    if len(pts) == 0:
-        pts = band.reshape(-1, 3).astype(np.float32)
-
-    med = np.median(pts, axis=0)
-    d = np.linalg.norm(pts - med, axis=1)
-    keep = pts[d <= np.percentile(d, 70)]
-
-    if len(keep) < 50:
-        keep = pts
-
-    return np.median(keep, axis=0)
-
-def make_gradient_background(target_w: int, target_h: int, top_rgb, bottom_rgb):
-    top_rgb = np.array(top_rgb, dtype=np.float32)
-    bottom_rgb = np.array(bottom_rgb, dtype=np.float32)
-
-    y = np.linspace(0.0, 1.0, target_h, dtype=np.float32)[:, None]
-    grad = top_rgb * (1.0 - y) + bottom_rgb * y
-    grad = np.repeat(grad[:, None, :], target_w, axis=1)
-    grad = np.clip(np.round(grad), 0, 255).astype(np.uint8)
-
-    return Image.fromarray(grad, mode="RGB")
-
 def paste_with_feather_bg(canvas: Image.Image, fg: Image.Image, x: int, y: int, feather: int = 10):
     canvas_arr = np.array(canvas).astype(np.float32)
     bg_arr = canvas_arr.copy()
@@ -154,17 +124,23 @@ def paste_with_alpha(canvas: Image.Image, fg: Image.Image, x: int, y: int):
     canvas_rgba.alpha_composite(fg_rgba, (x, y))
     return canvas_rgba.convert("RGB")
 
+def hex_to_rgb(value: str):
+    value = value.strip().lstrip("#")
+    if len(value) != 6:
+        raise ValueError("Background color must be a 6-digit hex value.")
+
+    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+
 def build_output(
     trimmed: Image.Image,
     target_w: int,
     target_h: int,
     *,
-    background_mode: str = "gradient",
+    background_color: tuple[int, int, int] = (255, 255, 255),
     remove_background: bool = False,
     background_model: str = "u2netp",
 ):
     trimmed = trimmed.convert("RGB")
-    colour_sample = trimmed
     if remove_background:
         trimmed = remove_ai_background(trimmed, model_name=background_model)
 
@@ -173,20 +149,7 @@ def build_output(
     x = (target_w - fw) // 2
     y = (target_h - fh) // 2
 
-    sample_fitted = resize_fit(colour_sample, target_w, target_h)
-    arr = np.array(sample_fitted.convert("RGB")).astype(np.uint8)
-    band_h = max(6, min(24, fh // 18))
-
-    top_band = arr[:band_h, :, :]
-    bottom_band = arr[-band_h:, :, :]
-
-    top_rgb = robust_band_colour(top_band)
-    bottom_rgb = robust_band_colour(bottom_band)
-
-    if background_mode == "white":
-        bg = Image.new("RGB", (target_w, target_h), (255, 255, 255))
-    else:
-        bg = make_gradient_background(target_w, target_h, top_rgb, bottom_rgb)
+    bg = Image.new("RGB", (target_w, target_h), background_color)
 
     if fitted.mode == "RGBA":
         out = paste_with_alpha(bg, fitted, x, y)
@@ -195,8 +158,7 @@ def build_output(
 
     return (
         out,
-        tuple(int(v) for v in top_rgb.round()),
-        tuple(int(v) for v in bottom_rgb.round()),
+        background_color,
         "ai" if remove_background else None,
     )
 
@@ -206,7 +168,7 @@ def process_zip(
     size_targets: list[tuple[int, int]] | tuple[tuple[int, int], ...] = targets,
     *,
     do_trim: bool = True,
-    background_mode: str = "gradient",
+    background_color: str | tuple[int, int, int] = (255, 255, 255),
     remove_background: bool = False,
     background_model: str = "u2netp",
     output_format: str = "PNG",
@@ -215,6 +177,8 @@ def process_zip(
 ):
     output_format = output_format.upper()
     extension = "jpg" if output_format == "JPEG" else output_format.lower()
+    if isinstance(background_color, str):
+        background_color = hex_to_rgb(background_color)
 
     output_folder = work_dir / "resized_organised"
     output_archive = work_dir / "resized_organised.zip"
@@ -266,11 +230,11 @@ def process_zip(
             ]
 
             for tw, th in size_targets:
-                out, top_rgb, bottom_rgb, background_removal_method = build_output(
+                out, bg_rgb, background_removal_method = build_output(
                     trimmed,
                     tw,
                     th,
-                    background_mode=background_mode,
+                    background_color=background_color,
                     remove_background=remove_background,
                     background_model=background_model,
                 )
@@ -280,9 +244,7 @@ def process_zip(
                     save_kwargs["quality"] = jpeg_quality
                 out.save(product_folder / output_filename, output_format, **save_kwargs)
 
-                info_parts.append(f"{tw}x{th}_bg_top={top_rgb}")
-                info_parts.append(f"{tw}x{th}_bg_bottom={bottom_rgb}")
-                info_parts.append(f"{tw}x{th}_background_mode={background_mode}")
+                info_parts.append(f"{tw}x{th}_background_color={bg_rgb}")
                 if background_removal_method:
                     info_parts.append(f"{tw}x{th}_background_removal={background_removal_method}")
 
