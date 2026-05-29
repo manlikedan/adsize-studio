@@ -52,8 +52,10 @@ with st.sidebar:
         help="One size per line, written as WIDTHxHEIGHT.",
         height=150,
     )
-    background_color = st.color_picker("Background color", value="#FFFFFF")
     remove_background = st.toggle("AI remove background", value=False)
+    background_color = "#FFFFFF"
+    if remove_background:
+        background_color = st.color_picker("Replacement background color", value="#FFFFFF")
     background_model = "u2netp"
     output_format = st.selectbox("Format", ["PNG", "JPEG", "WEBP"], index=0)
     jpeg_quality = st.slider("JPEG quality", min_value=60, max_value=100, value=92, disabled=output_format != "JPEG")
