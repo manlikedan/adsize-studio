@@ -2,6 +2,7 @@ from pathlib import Path
 from PIL import Image
 import zipfile, shutil, os, re
 import numpy as np
+from collections import deque
 
 # Change these paths if running locally.
 source_zip = Path("JCB New PRODUCTS.zip")
@@ -130,14 +131,83 @@ def paste_with_feather_bg(canvas: Image.Image, fg: Image.Image, x: int, y: int, 
 
     return Image.fromarray(np.clip(np.round(canvas_arr), 0, 255).astype(np.uint8), mode="RGB")
 
-def build_output(trimmed: Image.Image, target_w: int, target_h: int):
+def connected_edge_mask(mask: np.ndarray):
+    h, w = mask.shape
+    connected = np.zeros((h, w), dtype=bool)
+    queue = deque()
+
+    for x in range(w):
+        if mask[0, x]:
+            queue.append((0, x))
+            connected[0, x] = True
+        if mask[h - 1, x] and not connected[h - 1, x]:
+            queue.append((h - 1, x))
+            connected[h - 1, x] = True
+
+    for y in range(h):
+        if mask[y, 0] and not connected[y, 0]:
+            queue.append((y, 0))
+            connected[y, 0] = True
+        if mask[y, w - 1] and not connected[y, w - 1]:
+            queue.append((y, w - 1))
+            connected[y, w - 1] = True
+
+    while queue:
+        y, x = queue.popleft()
+        for y2, x2 in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+            if 0 <= y2 < h and 0 <= x2 < w and mask[y2, x2] and not connected[y2, x2]:
+                connected[y2, x2] = True
+                queue.append((y2, x2))
+
+    return connected
+
+def remove_edge_background(img: Image.Image, tolerance: int = 36, feather: int = 18):
+    rgba = img.convert("RGBA")
+    arr = np.array(rgba).astype(np.float32)
+    rgb = arr[:, :, :3]
+    h, w = rgb.shape[:2]
+
+    edge_pixels = np.concatenate((rgb[0, :, :], rgb[-1, :, :], rgb[:, 0, :], rgb[:, -1, :]), axis=0)
+    bg_rgb = np.median(edge_pixels, axis=0)
+    distance = np.linalg.norm(rgb - bg_rgb, axis=2)
+    bg_candidate = distance <= (tolerance + feather)
+    connected = connected_edge_mask(bg_candidate)
+
+    alpha = np.full((h, w), 255, dtype=np.float32)
+    fade = np.clip((distance - tolerance) / max(1, feather), 0, 1) * 255
+    alpha[connected] = fade[connected]
+
+    arr[:, :, 3] = np.minimum(arr[:, :, 3], alpha)
+    return Image.fromarray(np.clip(np.round(arr), 0, 255).astype(np.uint8), mode="RGBA"), tuple(int(v) for v in bg_rgb.round())
+
+def paste_with_alpha(canvas: Image.Image, fg: Image.Image, x: int, y: int):
+    canvas_rgba = canvas.convert("RGBA")
+    fg_rgba = fg.convert("RGBA")
+    canvas_rgba.alpha_composite(fg_rgba, (x, y))
+    return canvas_rgba.convert("RGB")
+
+def build_output(
+    trimmed: Image.Image,
+    target_w: int,
+    target_h: int,
+    *,
+    background_mode: str = "gradient",
+    remove_background: bool = False,
+    background_tolerance: int = 36,
+):
     trimmed = trimmed.convert("RGB")
+    colour_sample = trimmed
+    removed_bg_rgb = None
+    if remove_background:
+        trimmed, removed_bg_rgb = remove_edge_background(trimmed, tolerance=background_tolerance)
+
     fitted = resize_fit(trimmed, target_w, target_h)
     fw, fh = fitted.size
     x = (target_w - fw) // 2
     y = (target_h - fh) // 2
 
-    arr = np.array(fitted).astype(np.uint8)
+    sample_fitted = resize_fit(colour_sample, target_w, target_h)
+    arr = np.array(sample_fitted.convert("RGB")).astype(np.uint8)
     band_h = max(6, min(24, fh // 18))
 
     top_band = arr[:band_h, :, :]
@@ -146,10 +216,22 @@ def build_output(trimmed: Image.Image, target_w: int, target_h: int):
     top_rgb = robust_band_colour(top_band)
     bottom_rgb = robust_band_colour(bottom_band)
 
-    bg = make_gradient_background(target_w, target_h, top_rgb, bottom_rgb)
-    out = paste_with_feather_bg(bg, fitted, x, y, feather=10)
+    if background_mode == "white":
+        bg = Image.new("RGB", (target_w, target_h), (255, 255, 255))
+    else:
+        bg = make_gradient_background(target_w, target_h, top_rgb, bottom_rgb)
 
-    return out, tuple(int(v) for v in top_rgb.round()), tuple(int(v) for v in bottom_rgb.round())
+    if fitted.mode == "RGBA":
+        out = paste_with_alpha(bg, fitted, x, y)
+    else:
+        out = paste_with_feather_bg(bg, fitted, x, y, feather=10)
+
+    return (
+        out,
+        tuple(int(v) for v in top_rgb.round()),
+        tuple(int(v) for v in bottom_rgb.round()),
+        removed_bg_rgb,
+    )
 
 def process_zip(
     input_zip: Path,
@@ -157,6 +239,9 @@ def process_zip(
     size_targets: list[tuple[int, int]] | tuple[tuple[int, int], ...] = targets,
     *,
     do_trim: bool = True,
+    background_mode: str = "gradient",
+    remove_background: bool = False,
+    background_tolerance: int = 36,
     output_format: str = "PNG",
     jpeg_quality: int = 92,
     progress_callback=None,
@@ -214,7 +299,14 @@ def process_zip(
             ]
 
             for tw, th in size_targets:
-                out, top_rgb, bottom_rgb = build_output(trimmed, tw, th)
+                out, top_rgb, bottom_rgb, removed_bg_rgb = build_output(
+                    trimmed,
+                    tw,
+                    th,
+                    background_mode=background_mode,
+                    remove_background=remove_background,
+                    background_tolerance=background_tolerance,
+                )
                 output_filename = f"{title}_{tw}x{th}.{extension}"
                 save_kwargs = {"optimize": True}
                 if output_format == "JPEG":
@@ -223,6 +315,9 @@ def process_zip(
 
                 info_parts.append(f"{tw}x{th}_bg_top={top_rgb}")
                 info_parts.append(f"{tw}x{th}_bg_bottom={bottom_rgb}")
+                info_parts.append(f"{tw}x{th}_background_mode={background_mode}")
+                if removed_bg_rgb:
+                    info_parts.append(f"{tw}x{th}_removed_bg_sample={removed_bg_rgb}")
 
             report.append(" | ".join(info_parts))
 
