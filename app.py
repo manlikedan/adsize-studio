@@ -53,15 +53,8 @@ with st.sidebar:
         height=150,
     )
     background_mode = st.selectbox("Background", ["Gradient fill", "White"], index=0)
-    remove_background = st.toggle("Remove edge background", value=False)
-    background_tolerance = st.slider(
-        "Removal strength",
-        min_value=12,
-        max_value=80,
-        value=36,
-        disabled=not remove_background,
-        help="Higher values remove more pixels similar to the image edges.",
-    )
+    remove_background = st.toggle("AI remove background", value=False)
+    background_model = "u2netp"
     output_format = st.selectbox("Format", ["PNG", "JPEG", "WEBP"], index=0)
     jpeg_quality = st.slider("JPEG quality", min_value=60, max_value=100, value=92, disabled=output_format != "JPEG")
     do_trim = st.toggle("Auto trim product margins", value=True)
@@ -111,7 +104,7 @@ if st.button("Build ad assets", type="primary", disabled=not can_process):
                 do_trim=do_trim,
                 background_mode="white" if background_mode == "White" else "gradient",
                 remove_background=remove_background,
-                background_tolerance=background_tolerance,
+                background_model=background_model,
                 output_format=output_format,
                 jpeg_quality=jpeg_quality,
                 progress_callback=update_progress,

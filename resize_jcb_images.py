@@ -2,7 +2,6 @@ from pathlib import Path
 from PIL import Image
 import zipfile, shutil, os, re
 import numpy as np
-from collections import deque
 
 # Change these paths if running locally.
 source_zip = Path("JCB New PRODUCTS.zip")
@@ -131,54 +130,23 @@ def paste_with_feather_bg(canvas: Image.Image, fg: Image.Image, x: int, y: int, 
 
     return Image.fromarray(np.clip(np.round(canvas_arr), 0, 255).astype(np.uint8), mode="RGB")
 
-def connected_edge_mask(mask: np.ndarray):
-    h, w = mask.shape
-    connected = np.zeros((h, w), dtype=bool)
-    queue = deque()
+_rembg_session = None
 
-    for x in range(w):
-        if mask[0, x]:
-            queue.append((0, x))
-            connected[0, x] = True
-        if mask[h - 1, x] and not connected[h - 1, x]:
-            queue.append((h - 1, x))
-            connected[h - 1, x] = True
+def remove_ai_background(img: Image.Image, model_name: str = "u2netp"):
+    os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba-cache")
+    os.environ.setdefault("U2NET_HOME", "/tmp/u2net-cache")
+    try:
+        from rembg import new_session, remove
+    except ImportError as error:
+        raise RuntimeError(
+            "AI background removal needs the rembg package. Install requirements.txt and restart the app."
+        ) from error
 
-    for y in range(h):
-        if mask[y, 0] and not connected[y, 0]:
-            queue.append((y, 0))
-            connected[y, 0] = True
-        if mask[y, w - 1] and not connected[y, w - 1]:
-            queue.append((y, w - 1))
-            connected[y, w - 1] = True
+    global _rembg_session
+    if _rembg_session is None:
+        _rembg_session = new_session(model_name)
 
-    while queue:
-        y, x = queue.popleft()
-        for y2, x2 in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
-            if 0 <= y2 < h and 0 <= x2 < w and mask[y2, x2] and not connected[y2, x2]:
-                connected[y2, x2] = True
-                queue.append((y2, x2))
-
-    return connected
-
-def remove_edge_background(img: Image.Image, tolerance: int = 36, feather: int = 18):
-    rgba = img.convert("RGBA")
-    arr = np.array(rgba).astype(np.float32)
-    rgb = arr[:, :, :3]
-    h, w = rgb.shape[:2]
-
-    edge_pixels = np.concatenate((rgb[0, :, :], rgb[-1, :, :], rgb[:, 0, :], rgb[:, -1, :]), axis=0)
-    bg_rgb = np.median(edge_pixels, axis=0)
-    distance = np.linalg.norm(rgb - bg_rgb, axis=2)
-    bg_candidate = distance <= (tolerance + feather)
-    connected = connected_edge_mask(bg_candidate)
-
-    alpha = np.full((h, w), 255, dtype=np.float32)
-    fade = np.clip((distance - tolerance) / max(1, feather), 0, 1) * 255
-    alpha[connected] = fade[connected]
-
-    arr[:, :, 3] = np.minimum(arr[:, :, 3], alpha)
-    return Image.fromarray(np.clip(np.round(arr), 0, 255).astype(np.uint8), mode="RGBA"), tuple(int(v) for v in bg_rgb.round())
+    return remove(img.convert("RGBA"), session=_rembg_session)
 
 def paste_with_alpha(canvas: Image.Image, fg: Image.Image, x: int, y: int):
     canvas_rgba = canvas.convert("RGBA")
@@ -193,13 +161,12 @@ def build_output(
     *,
     background_mode: str = "gradient",
     remove_background: bool = False,
-    background_tolerance: int = 36,
+    background_model: str = "u2netp",
 ):
     trimmed = trimmed.convert("RGB")
     colour_sample = trimmed
-    removed_bg_rgb = None
     if remove_background:
-        trimmed, removed_bg_rgb = remove_edge_background(trimmed, tolerance=background_tolerance)
+        trimmed = remove_ai_background(trimmed, model_name=background_model)
 
     fitted = resize_fit(trimmed, target_w, target_h)
     fw, fh = fitted.size
@@ -230,7 +197,7 @@ def build_output(
         out,
         tuple(int(v) for v in top_rgb.round()),
         tuple(int(v) for v in bottom_rgb.round()),
-        removed_bg_rgb,
+        "ai" if remove_background else None,
     )
 
 def process_zip(
@@ -241,7 +208,7 @@ def process_zip(
     do_trim: bool = True,
     background_mode: str = "gradient",
     remove_background: bool = False,
-    background_tolerance: int = 36,
+    background_model: str = "u2netp",
     output_format: str = "PNG",
     jpeg_quality: int = 92,
     progress_callback=None,
@@ -299,13 +266,13 @@ def process_zip(
             ]
 
             for tw, th in size_targets:
-                out, top_rgb, bottom_rgb, removed_bg_rgb = build_output(
+                out, top_rgb, bottom_rgb, background_removal_method = build_output(
                     trimmed,
                     tw,
                     th,
                     background_mode=background_mode,
                     remove_background=remove_background,
-                    background_tolerance=background_tolerance,
+                    background_model=background_model,
                 )
                 output_filename = f"{title}_{tw}x{th}.{extension}"
                 save_kwargs = {"optimize": True}
@@ -316,8 +283,8 @@ def process_zip(
                 info_parts.append(f"{tw}x{th}_bg_top={top_rgb}")
                 info_parts.append(f"{tw}x{th}_bg_bottom={bottom_rgb}")
                 info_parts.append(f"{tw}x{th}_background_mode={background_mode}")
-                if removed_bg_rgb:
-                    info_parts.append(f"{tw}x{th}_removed_bg_sample={removed_bg_rgb}")
+                if background_removal_method:
+                    info_parts.append(f"{tw}x{th}_background_removal={background_removal_method}")
 
             report.append(" | ".join(info_parts))
 
