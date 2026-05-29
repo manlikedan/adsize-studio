@@ -1,4 +1,5 @@
 numpy
+onnxruntime
 Pillow
-rembg
+rembg[cpu]
 streamlit
