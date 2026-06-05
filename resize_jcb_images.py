@@ -17,9 +17,41 @@ targets = [
 
 valid_exts = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 
+def unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+
+    counter = 2
+    while True:
+        candidate = path.with_name(f"{path.stem}_{counter}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
 def safe_stem(name: str) -> str:
     stem, _ = os.path.splitext(name)
     return re.sub(r"[^\w\-. ]+", "_", stem).strip()
+
+def safe_extract_zip(zip_path: Path, destination: Path):
+    destination = destination.resolve()
+
+    with zipfile.ZipFile(zip_path, "r") as z:
+        for item in z.infolist():
+            if item.is_dir():
+                continue
+
+            item_path = Path(item.filename)
+            if item_path.name.startswith("._") or item_path.suffix.lower() not in valid_exts:
+                continue
+
+            target_path = (destination / item_path).resolve()
+            if destination not in target_path.parents and target_path != destination:
+                continue
+
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path = unique_path(target_path)
+            with z.open(item) as source, target_path.open("wb") as target:
+                shutil.copyfileobj(source, target)
 
 def detect_outer_margin_trim(img: Image.Image):
     arr = np.array(img.convert("RGB")).astype(np.float32)
@@ -178,6 +210,39 @@ def process_zip(
     jpeg_quality: int = 92,
     progress_callback=None,
 ):
+    input_folder = work_dir / "_zip_input"
+    if input_folder.exists():
+        shutil.rmtree(input_folder)
+    input_folder.mkdir(parents=True, exist_ok=True)
+
+    safe_extract_zip(input_zip, input_folder)
+
+    return process_folder(
+        input_folder,
+        work_dir,
+        size_targets,
+        do_trim=do_trim,
+        background_color=background_color,
+        remove_background=remove_background,
+        background_model=background_model,
+        output_format=output_format,
+        jpeg_quality=jpeg_quality,
+        progress_callback=progress_callback,
+    )
+
+def process_folder(
+    input_folder: Path,
+    work_dir: Path,
+    size_targets: list[tuple[int, int]] | tuple[tuple[int, int], ...] = targets,
+    *,
+    do_trim: bool = True,
+    background_color: str | tuple[int, int, int] = (255, 255, 255),
+    remove_background: bool = False,
+    background_model: str = "u2netp",
+    output_format: str = "PNG",
+    jpeg_quality: int = 92,
+    progress_callback=None,
+):
     output_format = output_format.upper()
     extension = "jpg" if output_format == "JPEG" else output_format.lower()
     if isinstance(background_color, str):
@@ -185,21 +250,13 @@ def process_zip(
 
     output_folder = work_dir / "resized_organised"
     output_archive = work_dir / "resized_organised.zip"
-    extract_dir = work_dir / "_extract_temp"
 
     if output_folder.exists():
         shutil.rmtree(output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
 
-    if extract_dir.exists():
-        shutil.rmtree(extract_dir)
-    extract_dir.mkdir(parents=True, exist_ok=True)
-
-    with zipfile.ZipFile(input_zip, "r") as z:
-        z.extractall(extract_dir)
-
     image_files = [
-        p for p in extract_dir.rglob("*")
+        p for p in input_folder.rglob("*")
         if p.is_file() and p.suffix.lower() in valid_exts and not p.name.startswith("._")
     ]
 
@@ -263,8 +320,6 @@ def process_zip(
     with zipfile.ZipFile(output_archive, "w", zipfile.ZIP_DEFLATED) as z:
         for p in output_folder.rglob("*"):
             z.write(p, p.relative_to(output_folder.parent))
-
-    shutil.rmtree(extract_dir)
 
     return output_archive, output_folder, report
 

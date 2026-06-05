@@ -1,6 +1,6 @@
 # adsize-studio
 
-Streamlit app for resizing product image zips into Google Ads-ready asset sizes.
+Streamlit app for resizing product image uploads into Google Ads-ready asset sizes. The uploader accepts individual image files, one or more `.zip` archives, or a mix of both via drag and drop.
 
 ## Streamlit Cloud setup
 

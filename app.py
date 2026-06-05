@@ -4,7 +4,7 @@ import zipfile
 
 import streamlit as st
 
-from resize_jcb_images import process_zip, targets, valid_exts
+from resize_jcb_images import process_folder, safe_extract_zip, targets, unique_path, valid_exts
 
 
 APP_NAME = "AdSize Studio"
@@ -40,9 +40,15 @@ def parse_sizes(raw: str) -> list[tuple[int, int]]:
 default_sizes = "\n".join(f"{width}x{height}" for width, height in targets)
 
 st.title(APP_NAME)
-st.caption("Resize product images into Google Ads-ready creative sizes from one organised zip.")
+st.caption("Resize product images into Google Ads-ready creative sizes from images or organised zips.")
 
-uploaded_zip = st.file_uploader("Product image zip", type=["zip"])
+upload_types = ["zip", *sorted(ext.lstrip(".") for ext in valid_exts)]
+uploaded_files = st.file_uploader(
+    "Product images or zips",
+    type=upload_types,
+    accept_multiple_files=True,
+    help="Drag in individual image files, one or more .zip archives, or a mix of both.",
+)
 
 with st.sidebar:
     st.header("Google Ads outputs")
@@ -64,30 +70,45 @@ with st.sidebar:
 try:
     selected_sizes = parse_sizes(sizes_raw)
     st.write("Selected sizes:", ", ".join(f"{width}x{height}" for width, height in selected_sizes))
-    can_process = uploaded_zip is not None
+    can_process = bool(uploaded_files)
 except ValueError as error:
     selected_sizes = []
     can_process = False
     st.error(str(error))
 
-if uploaded_zip is None:
-    st.info("Choose a .zip file to get started.")
+if not uploaded_files:
+    st.info("Drag in image files or choose a .zip file to get started.")
 
-if uploaded_zip is not None:
+if uploaded_files:
+    direct_image_count = 0
+    zip_image_count = 0
     try:
-        with zipfile.ZipFile(uploaded_zip) as source:
-            image_count = sum(
-                1
-                for item in source.infolist()
-                if (
-                    not item.is_dir()
-                    and Path(item.filename).suffix.lower() in valid_exts
-                    and not Path(item.filename).name.startswith("._")
-                )
-            )
-        st.success(f"Found {image_count} image file{'s' if image_count != 1 else ''} in the zip.")
+        for uploaded_file in uploaded_files:
+            suffix = Path(uploaded_file.name).suffix.lower()
+            if suffix == ".zip":
+                with zipfile.ZipFile(uploaded_file) as source:
+                    zip_image_count += sum(
+                        1
+                        for item in source.infolist()
+                        if (
+                            not item.is_dir()
+                            and Path(item.filename).suffix.lower() in valid_exts
+                            and not Path(item.filename).name.startswith("._")
+                        )
+                    )
+                uploaded_file.seek(0)
+            elif suffix in valid_exts:
+                direct_image_count += 1
+
+        image_count = direct_image_count + zip_image_count
+        st.success(
+            f"Found {image_count} image file{'s' if image_count != 1 else ''} "
+            f"({direct_image_count} direct, {zip_image_count} from zip)."
+        )
+        if image_count == 0:
+            can_process = False
     except zipfile.BadZipFile:
-        st.error("That file does not look like a valid zip archive.")
+        st.error("One of the uploaded files does not look like a valid zip archive.")
         can_process = False
 
 if st.button("Build ad assets", type="primary", disabled=not can_process):
@@ -95,16 +116,26 @@ if st.button("Build ad assets", type="primary", disabled=not can_process):
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
-        input_path = tmp_dir / uploaded_zip.name
-        input_path.write_bytes(uploaded_zip.getvalue())
+        input_folder = tmp_dir / "input_images"
+        input_folder.mkdir(parents=True, exist_ok=True)
+
+        for uploaded_file in uploaded_files:
+            suffix = Path(uploaded_file.name).suffix.lower()
+            if suffix == ".zip":
+                zip_path = unique_path(tmp_dir / Path(uploaded_file.name).name)
+                zip_path.write_bytes(uploaded_file.getvalue())
+                safe_extract_zip(zip_path, input_folder)
+            elif suffix in valid_exts:
+                image_path = unique_path(input_folder / Path(uploaded_file.name).name)
+                image_path.write_bytes(uploaded_file.getvalue())
 
         def update_progress(done: int, total: int, filename: str):
             if total:
                 progress.progress(done / total, text=f"Processing {done}/{total}: {filename}")
 
         try:
-            output_zip, output_folder, report = process_zip(
-                input_path,
+            output_zip, output_folder, report = process_folder(
+                input_folder,
                 tmp_dir,
                 selected_sizes,
                 do_trim=do_trim,
